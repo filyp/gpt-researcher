@@ -27,3 +27,7 @@ node_modules
 .docusaurus
 build
 docs/build
+
+.vscode
+context_cache
+context_cache_old

@@ -1,9 +1,41 @@
 import asyncio
+import os
 import time
+from pathlib import Path
 from gpt_researcher.config import Config
 from gpt_researcher.master.functions import *
 from gpt_researcher.context.compression import ContextCompressor
 from gpt_researcher.memory import Memory
+
+context_cache_dir = Path(__file__).resolve().parents[2] / "context_cache"
+
+
+# def load_cache(cache_item_path):
+#     """
+#     cache_item_path is a directory, where several txt files with contexts are stored
+#     loads each of them and returns a list of contexts
+#     """
+#     contexts = []
+#     # they have a format of 0.txt, 1.txt, 2.txt, ...
+#     files = cache_item_path.glob("*.txt")
+#     # sort by number
+#     files = sorted(files, key=lambda x: int(x.stem))
+#     for file_ in files:
+#         context = file_.read_text()
+#         contexts.append(context)
+#     return contexts
+
+
+# def save_cache(cache_item_path, context):
+#     """
+#     cache_item_path is a directory, where several txt files with contexts will be stored
+#     """
+#     assert not cache_item_path.exists(), f"Cache item path {cache_item_path} already exists"
+#     cache_item_path.mkdir()
+#     for i, context_item in enumerate(context):
+#         path = cache_item_path / f"{i}.txt"
+#         path.write_text(context_item)
+
 
 class GPTResearcher:
     """
@@ -37,8 +69,30 @@ class GPTResearcher:
             Report
         """
         print(f"🔎 Running research for '{self.query}'...")
+        
+        # prepare cache
+        cache_path = context_cache_dir / self.query
+        os.environ["CACHE_PATH"] = str(cache_path)
+        os.environ["USE_CACHED"] = str(cache_path.exists())
+        if not cache_path.exists():
+            cache_path.mkdir()
+            (cache_path / "sub_query_search").mkdir()
+            (cache_path / "scraped").mkdir()
+            await stream_output("logs", f"📚 Creating cache for the query: {self.query}...", self.websocket)
+        else:
+            await stream_output("logs", f"📚 Using cached data for research task: {self.query}...", self.websocket)
+            
         # Generate Agent
-        self.agent, self.role = await choose_agent(self.query, self.cfg)
+        if os.environ["USE_CACHED"] != "True":
+            self.agent, self.role = await choose_agent(self.query, self.cfg)
+            # save to cache
+            (Path(os.environ["CACHE_PATH"]) / "agent.txt").write_text(self.agent)
+            (Path(os.environ["CACHE_PATH"]) / "role.txt").write_text(self.role)
+        else:
+            # load from cache
+            self.agent = (Path(os.environ["CACHE_PATH"]) / "agent.txt").read_text()
+            self.role = (Path(os.environ["CACHE_PATH"]) / "role.txt").read_text()
+            
         await stream_output("logs", self.agent, self.websocket)
 
         # If specified, the researcher will use the given urls as the context for the research.
@@ -75,8 +129,18 @@ class GPTResearcher:
             context: List of context
         """
         context = []
+
         # Generate Sub-Queries including original query
-        sub_queries = await get_sub_queries(query, self.role, self.cfg) + [query]
+        path = Path(os.environ["CACHE_PATH"]) / "sub_queries.json"
+        if os.environ["USE_CACHED"] != "True":
+            # generate sub queries
+            sub_queries = await get_sub_queries(query, self.role, self.cfg) + [query]
+            # save to cache
+            path.write_text(json.dumps(sub_queries, indent=4))
+        else:
+            # load from cache
+            sub_queries = json.loads(path.read_text())
+
         await stream_output("logs",
                             f"🧠 I will conduct my research based on the following queries: {sub_queries}...",
                             self.websocket)
@@ -126,8 +190,17 @@ class GPTResearcher:
             Summary
         """
         # Get Urls
-        retriever = self.retriever(sub_query)
-        search_results = retriever.search(max_results=self.cfg.max_search_results_per_query)
+        path = Path(os.environ["CACHE_PATH"]) / "sub_query_search" / f"{sub_query}.json"
+        if os.environ["USE_CACHED"] != "True":
+            # get search results
+            retriever = self.retriever(sub_query)
+            search_results = retriever.search(max_results=self.cfg.max_search_results_per_query)
+            # save to cache
+            path.write_text(json.dumps(search_results, indent=4))
+        else:
+            # load from cache
+            search_results = json.loads(path.read_text())
+
         new_search_urls = await self.get_new_urls([url.get("href") for url in search_results])
 
         # Scrape Urls

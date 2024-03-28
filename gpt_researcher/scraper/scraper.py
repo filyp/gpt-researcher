@@ -1,5 +1,7 @@
 from concurrent.futures.thread import ThreadPoolExecutor
 from functools import partial
+import os
+from pathlib import Path
 
 import requests
 
@@ -43,16 +45,29 @@ class Scraper:
         Extracts the data from the link
         """
         content = ""
-        try:
-            Scraper = self.get_scraper(link)
-            scraper = Scraper(link, session)
-            content = scraper.scrape()
 
+
+        filename = link.replace("/", "_").replace(":", "_").replace(".", "_")
+        path = Path(os.environ["CACHE_PATH"]) / "scraped" / f"{filename}.txt"
+        if os.environ["USE_CACHED"] != "True":
+            # scrape
+            try:
+                Scraper = self.get_scraper(link)
+                scraper = Scraper(link, session)
+                content = scraper.scrape()
+            except Exception as e:
+                content = ""
             if len(content) < 100:
-                return {"url": link, "raw_content": None}
-            return {"url": link, "raw_content": content}
-        except Exception as e:
-            return {"url": link, "raw_content": None}
+                content = ""
+
+            # save to cache
+            path.write_text(content)
+        else:
+            # load from cache
+            assert path.exists(), f"File {path} does not exist."
+            content = path.read_text()
+
+        return {"url": link, "raw_content": content if content else None}
 
     def get_scraper(self, link):
         """
@@ -77,6 +92,7 @@ class Scraper:
             "newspaper": NewspaperScraper,
             "bs": BeautifulSoupScraper,
             "web_base_loader": WebBaseLoaderScraper,
+            # "truth": TruthScraper,
         }
 
         scraper_key = None
@@ -85,6 +101,8 @@ class Scraper:
             scraper_key = "pdf"
         elif "arxiv.org" in link:
             scraper_key = "arxiv"
+        # elif "truth.com" in link:
+            # scraper_key = "truth"
         else:
             scraper_key = self.scraper
 
